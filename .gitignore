@@ -1,0 +1,10 @@
+/target/
+/.project
+/bin
+/.settings
+/.classpath
+/.pydevproject
+.idea/**
+.idea/libraries/**
+.vscode
+*.iml

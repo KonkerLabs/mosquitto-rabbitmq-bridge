@@ -1,0 +1,37 @@
+{
+  "id": "/konker-iot/infra/mosquitto-rabbitmq-bridge",
+  "cmd": null,
+  "cpus": 0.5,
+  "mem": 1024,
+  "disk": 0,
+  "instances": 0,
+  "constraints": [
+    [
+      "group",
+      "CLUSTER",
+      "rabbit"
+    ]
+  ],
+  "container": {
+    "type": "DOCKER",
+    "volumes": [],
+    "docker": {
+      "image": "konkerlabs/mosquitto:demo-bridge-VERSION",
+      "network": "BRIDGE",
+      "portMappings": null,
+      "privileged": true,
+      "parameters": [],
+      "forcePullImage": true
+    }
+  },
+  "portDefinitions": [
+    {
+      "port": 10003,
+      "protocol": "tcp",
+      "labels": {}
+    }
+  ],
+  "uris": [
+    "file:///etc/docker.tar.gz"
+  ]
+}

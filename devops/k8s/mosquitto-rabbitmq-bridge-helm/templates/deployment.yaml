@@ -1,0 +1,73 @@
+{{- $helmName := include "mosquitto-rabbitmq-bridge-helm.name" . -}}
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: {{ include "mosquitto-rabbitmq-bridge-helm.fullname" . }}
+  labels:
+    app: {{ include "mosquitto-rabbitmq-bridge-helm.name" . }}
+    chart: {{ include "mosquitto-rabbitmq-bridge-helm.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "mosquitto-rabbitmq-bridge-helm.name" . }}
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "mosquitto-rabbitmq-bridge-helm.name" . }}
+        release: {{ .Release.Name }}
+    spec:
+      imagePullSecrets:
+      - name: {{ .Values.image.credentials.secret }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.image.containerPort }}
+              protocol: TCP
+          resources:
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+          env:
+          {{- if .Values.configmap -}}
+          {{- range $key, $value := .Values.configmap }}
+          - name: {{ $key }}
+            valueFrom:
+              configMapKeyRef:
+                name: {{ $helmName }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+
+          {{- if .Values.secrets -}}
+          {{- range $key, $value := .Values.secrets }}
+          - name: {{ $key }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $helmName }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+
+{{ toYaml .Values.resources | indent 12 }}
+    {{- with .Values.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+    {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+    {{- end }}

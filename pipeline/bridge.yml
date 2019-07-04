@@ -1,0 +1,409 @@
+groups: []
+
+resource_types:
+
+- name: marathon
+  type: docker-image
+  source:
+    repository: ckaznocha/marathon-resource
+
+- name: slack-notification
+  type: docker-image
+  source:
+    repository: cfcommunity/slack-notification-resource
+    tag: latest
+
+resources:
+
+- name: version
+  type: semver
+  source:
+    driver: git
+    file: version
+    uri: https://bitbucket.org/konkerlabs/mosquitto-rabbitmq-bridge.git
+    username: (( grab params.bitbucket.user ))
+    password: (( grab params.bitbucket.passwd ))
+    branch: master
+
+- name: registry-data-s3
+  type: s3
+  source:
+    bucket: konker-cd-pipeline-artifacts
+    region_name: us-east-1
+    access_key_id: (( grab params.amazons3.access_key_id ))
+    secret_access_key: (( grab params.amazons3.secret_access_key ))
+    regexp: staging/mosquitto-rabbitmq-bridge-(.*).jar
+
+- name: github-repo
+  type: git
+  source:
+    uri: https://bitbucket.org/konkerlabs/mosquitto-rabbitmq-bridge.git
+    username: (( grab params.bitbucket.user ))
+    password: (( grab params.bitbucket.passwd ))
+    branch: master
+
+- name: docker-image-staging
+  type: docker-image
+  source:
+    repository: konkerlabs/mosquitto
+    username: (( grab params.docker.user ))
+    password: (( grab params.docker.passwd ))
+  check_every: 12h
+
+- name: docker-image-techlab
+  type: docker-image
+  source:
+    repository: konkerlabs/mosquitto
+    username: (( grab params.docker.user ))
+    password: (( grab params.docker.passwd ))
+  check_every: 12h
+
+- name: docker-image-demo
+  type: docker-image
+  source:
+    repository: konkerlabs/mosquitto
+    username: (( grab params.docker.user ))
+    password: (( grab params.docker.passwd ))
+  check_every: 12h
+
+- name: marathon-staging
+  type: marathon
+  source:
+    app_id: konker-iot/infra/mosquitto-rabbitmq-bridge
+    basic_auth:
+      user_name: (( grab params.marathon.user ))
+      password: (( grab params.marathon.passwd ))
+    uri: http://marathon.staging.konkerlabs.net
+
+- name: marathon-techlab
+  type: marathon
+  source:
+    app_id: konker-iot/infra/mosquitto-rabbitmq-bridge
+    basic_auth:
+      user_name: (( grab params.marathon.user ))
+      password: (( grab params.marathon.passwd ))
+    uri: http://marathon.techlab.konkerlabs.net
+
+- name: marathon-demo
+  type: marathon
+  source:
+    app_id: konker-iot/infra/mosquitto-rabbitmq-bridge
+    basic_auth:
+      user_name: (( grab params.marathon.user ))
+      password: (( grab params.marathon.passwd ))
+    uri: http://10.1.5.67:8080
+
+- name: slack-alert
+  type: slack-notification
+  source:
+    url:  (( grab params.slack.url_hook ))
+
+jobs:
+
+- name: test-and-package
+  build_logs_to_retain: 10
+  plan:
+  - get: version
+  - get: github-repo
+    trigger: true
+  - task: maven-package
+    privileged: true
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: konkerlabs/konker-registry
+          username: (( grab params.docker.user ))
+          password: (( grab params.docker.passwd ))
+          tag: concourse-maven-cache
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls github-repo
+          echo packaging...
+          mvn -f github-repo/pom.xml clean install spring-boot:repackage
+          mv github-repo/target/mosquitto-rabbitmq-bridge.jar jars/mosquitto-rabbitmq-bridge-$(cat version/version).jar
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: version
+        path: ""
+      outputs:
+      - name: jars
+        path: ""
+  - put: registry-data-s3
+    params:
+      file: jars/mosquitto-rabbitmq-bridge-*.jar
+  on_failure:
+    do:
+    - put: slack-alert
+      params:
+        icon_emoji: ':concourse-ci:'
+        text: |
+          :warning: *$BUILD_PIPELINE_NAME*.*$BUILD_JOB_NAME* failed!
+
+- name: docker-staging
+  build_logs_to_retain: 10
+  plan:
+  - get: registry-data-s3
+    passed:
+    - test-and-package
+    version: latest
+  - get: github-repo
+  - task: setup docker artifacts
+    privileged: true
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: docker
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls registry-data-s3
+          cp registry-data-s3/mosquitto-rabbitmq-bridge-$(cat registry-data-s3/version).jar        github-repo/docker/bridge/build/mosquitto-rabbitmq-bridge.jar
+          cp -r github-repo/docker docker-artifacts
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: registry-data-s3
+        path: ""
+      outputs:
+      - name: docker-artifacts
+        path: ""
+  - put: docker-image-staging
+    params:
+      build: docker-artifacts/docker/bridge
+      tag: registry-data-s3/version
+      tag_prefix: staging-bridge-
+
+- name: marathon-staging
+  build_logs_to_retain: 10
+  plan:
+  - get: version
+  - get: github-repo
+  - get: docker-image-staging
+    passed:
+    - docker-staging
+    params:
+      skip_download: true
+  - task: deploy in marathon
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: busybox
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls github-repo/pipeline
+          sed "s/VERSION/$(cat version/version)/" github-repo/pipeline/marathon-staging.json > marathon-confs/marathon.json
+          cat marathon-confs/marathon.json
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: version
+        path: ""
+      outputs:
+      - name: marathon-confs
+        path: ""
+  - put: marathon-staging
+    params:
+      app_json: marathon-confs/marathon.json
+      time_out: 600
+  on_success:
+    do:
+    - put: slack-alert
+      params:
+        icon_emoji: ':concourse-ci:'
+        text: |
+          :rocket: *staging.mosquitto-rabbitmq-bridge* was launched!
+
+- name: docker-techlab
+  build_logs_to_retain: 10
+  plan:
+  - get: registry-data-s3
+    passed:
+    - test-and-package
+    version: latest
+  - get: github-repo
+  - task: setup docker artifacts
+    privileged: true
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: docker
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls registry-data-s3
+          cp registry-data-s3/mosquitto-rabbitmq-bridge-$(cat registry-data-s3/version).jar        github-repo/docker/bridge/build/mosquitto-rabbitmq-bridge.jar
+          cp -r github-repo/docker docker-artifacts
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: registry-data-s3
+        path: ""
+      outputs:
+      - name: docker-artifacts
+        path: ""
+  - put: docker-image-techlab
+    params:
+      build: docker-artifacts/docker/bridge
+      tag: registry-data-s3/version
+      tag_prefix: techlab-bridge-
+
+- name: marathon-techlab
+  build_logs_to_retain: 10
+  plan:
+  - get: version
+  - get: github-repo
+  - get: docker-image-techlab
+    passed:
+    - docker-techlab
+    params:
+      skip_download: true
+  - task: deploy in marathon
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: busybox
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls github-repo/pipeline
+          sed "s/VERSION/$(cat version/version)/" github-repo/pipeline/marathon-techlab.json > marathon-confs/marathon.json
+          cat marathon-confs/marathon.json
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: version
+        path: ""
+      outputs:
+      - name: marathon-confs
+        path: ""
+  - put: marathon-techlab
+    params:
+      app_json: marathon-confs/marathon.json
+      time_out: 600
+  on_success:
+    do:
+    - put: slack-alert
+      params:
+        icon_emoji: ':concourse-ci:'
+        text: |
+          :rocket: *techlab.mosquitto-rabbitmq-bridge* was launched!
+
+- name: docker-demo
+  build_logs_to_retain: 10
+  plan:
+  - get: registry-data-s3
+    passed:
+    - test-and-package
+    version: latest
+  - get: github-repo
+  - task: setup docker artifacts
+    privileged: true
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: docker
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls registry-data-s3
+          cp registry-data-s3/mosquitto-rabbitmq-bridge-$(cat registry-data-s3/version).jar        github-repo/docker/bridge/build/mosquitto-rabbitmq-bridge.jar
+          cp -r github-repo/docker docker-artifacts
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: registry-data-s3
+        path: ""
+      outputs:
+      - name: docker-artifacts
+        path: ""
+  - put: docker-image-demo
+    params:
+      build: docker-artifacts/docker/bridge
+      tag: registry-data-s3/version
+      tag_prefix: demo-bridge-
+
+- name: marathon-demo
+  build_logs_to_retain: 10
+  plan:
+  - get: version
+  - get: github-repo
+  - get: docker-image-demo
+    passed:
+    - docker-demo
+    params:
+      skip_download: true
+  - task: deploy in marathon
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: busybox
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          ls
+          ls github-repo/pipeline
+          sed "s/VERSION/$(cat version/version)/" github-repo/pipeline/marathon-demo.json > marathon-confs/marathon.json
+          cat marathon-confs/marathon.json
+        dir: ""
+      inputs:
+      - name: github-repo
+        path: ""
+      - name: version
+        path: ""
+      outputs:
+      - name: marathon-confs
+        path: ""
+  - put: marathon-demo
+    params:
+      app_json: marathon-confs/marathon.json
+      time_out: 600
+  on_success:
+    do:
+    - put: slack-alert
+      params:
+        icon_emoji: ':concourse-ci:'
+        text: |
+          :rocket: *demo.mosquitto-rabbitmq-bridge* was launched!
